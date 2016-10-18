@@ -1,0 +1,128 @@
+# Link to the tutorial:         http://trevorstephens.com/kaggle-titanic-tutorial/getting-started-with-r/
+# Part 1, Booting up R:         http://trevorstephens.com/kaggle-titanic-tutorial/r-part-1-booting-up/
+# Part 2, Gender class model:   http://trevorstephens.com/kaggle-titanic-tutorial/r-part-2-the-gender-class-model/
+# Part 3, Decision trees:       http://trevorstephens.com/kaggle-titanic-tutorial/r-part-3-decision-trees/ 
+# Part 4, Feature engineering:  http://trevorstephens.com/kaggle-titanic-tutorial/r-part-4-feature-engineering/
+# Part 5, Random forests:       http://trevorstephens.com/kaggle-titanic-tutorial/r-part-5-random-forests/ 
+
+# Import the train and test .csv datasets
+test <- read.csv("~/Documents/R Titanic/test.csv")
+View(test)
+train <- read.csv("~/Documents/R Titanic/train.csv")
+View(train)
+
+# Shows how many survived...
+table(train$Survived)
+prop.table(table(train$Survived))
+
+# 1st prediction: everyone died
+test$Survived = rep(0,418)
+
+# Now use more predictors. Effect of Sex on Survived
+table(train$Sex, train$Survived)
+prop.table(table(train$Sex, train$Survived),1)
+
+# Update our prediction
+test$Survived = 0
+test$Survived[test$Sex == "female"] = 1
+
+# Consider age
+train$Child = 0
+train$Child[train$Age < 18] = 1
+aggregate(Survived ~ Child + Sex, data = train, FUN = sum)
+
+# Consider Pclass and ticket price
+train$Fare2 = '+30'
+train$Fare2[train$Fare >= 20 & train$Fare < 30] = '20-30'
+train$Fare2[train$Faire < 20 & train$Fare >= 10] = '10-20'
+train$Fare2[train$Fare < 10] = '-10'
+aggregate(Survived ~ Fare2 + Pclass + Sex, data=train)
+
+# Decision tree! rpart(outcome ~ predictor x + predictor y + ..., method="class")
+# method = "class" means classifier
+# method = "anova" to predict a continuous variable, such as age
+library(rpart)
+fit = rpart(Survived ~ Pclass + Sex + Age + SibSp + Parch + Fare + Embarked, data=train, method = "class")
+plot(fit)
+text(fit, cex=0.7)
+
+# Make it puh-rett!
+install.packages('rattle')
+install.packages('rpart.plot')
+install.packages('RColorBrewer')
+library(rattle)
+library(rpart.plot)
+library(RColorBrewer)
+
+# Make a 2nd tree with different rpart.control settings (?rpart.control to see defaults)
+fit = rpart(Survived ~ Pclass + Sex + Age + SibSp + Parch + Fare + Embarked, data=train, method = "class", control = rpart.control(minsplit = 20, cp = 0.005))
+fancyRpartPlot(fit)
+prediction = predict(fit, test, type = "class")
+submit4 = data.frame(PassengerId = test$PassengerId, Survived = prediction)
+write.csv(submit4, "2ndTree.csv", row.names = FALSE)
+
+# Snip the tree by clicking (deleting) the nodes that appear to go too far, be too specific
+new.fit <- prp(fit,snip=TRUE)$obj
+fancyRpartPlot(new.fit)
+
+# Isolate the passenger's title
+# Apply strsplit() to all rows with 
+# sapply(combi$Name, FUN=function(x) {strsplit(x, split='[,.]')[[1]][2]})
+combi$Name = as.character(combi$Name)
+combi$Title = sapply(combi$Name, FUN=function(x) {strsplit(x, split='[,.]')[[1]][2]})
+
+# Remove spaces that are in front of the titles
+# you can see the spaces by str(combi$Title)
+combi$Title = sub(' ', '', x = combi$Title)
+
+# Combine not-frequently used titles together.
+# %in% checks if a value is part of the vector it is compared to
+table(combi$Title)
+combi$Title[combi$Title %in% c('Mlle', 'Mme')] = 'Mlle'
+combi$Title[combi$Title %in% c('Capt', 'Don', 'Major', 'Jonkheer', 'Sir')] = 'Sir'
+combi$Title[combi$Title %in% c('Dona', 'Lady', 'the Countess')] = 'Lady'
+
+# Create family size
+combi$familySize = combi$SibSp + combi$Parch + 1
+
+# Isolate family name, same way we isolated the title
+combi$Surname = sapply(combi$Name, FUN=function(x){strsplit(x, split='[,.]')[[1]][1]})
+
+# create familyId
+combi$FamilyId = paste(as.character(combi$familySize), combi$Surname, sep = '')
+
+# Label families with less or 2 people as small
+combi$FamilyId[combi$familySize <= 2] = 'Small'
+table(combi$FamilyId)
+
+# Some remain
+# 1) create data frame
+FamIDs = data.frame(table(combi$FamilyId))
+
+# 2) select only those that have 2 or less
+FamIDs = FamIDs[FamIDs$Freq <= 2,]
+
+# 3) use them to fish out the remaining families of 2 or less in combi dataset
+combi$FamilyId[combi$FamilyId %in% FamIDs$Var1] = 'Small'
+
+# variable familyId -> factor
+# Behind the scenes, factors are basically stored as integers,
+# but masked with their text names
+combi$FamilyId = factor(combi$FamilyId)
+
+# Split data back into train & test
+train = combi[1:891,]
+test = combi[892:1309,]
+
+# Decision tree with new model
+fit = rpart(Survived ~ Pclass + Sex + Age + SibSp + Parch + Fare + Embarked + Title + familySize + FamilyId,
+            data=train, method = "class")
+fancyRpartPlot(fit)
+prediction = predict(fit, test, type="class")
+submit = data.frame(PassengerId = test$PassengerId, Survived=prediction)
+             
+# Predict missing (NA) Age values in combi$Age (both datasets)
+AgeFit = rpart(Age ~ Pclass + Sex + SibSp + Parch + Fare + Embarked + Title + familySize,
+               data = combi[!is.na(combi$Age), ], method="anova")
+combi$Age[is.na(combi$Age)] = predict(AgeFit, combi[is.na(combi$Age), ])
+
